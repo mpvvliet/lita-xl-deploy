@@ -3,6 +3,7 @@ require_relative './xld_id'
 require_relative './xld_rest'
 
 XLD_URL = "http://Highgarden.local:4516/deployit"
+REDIS_TIMEOUT_SECS = 60 * 60 # 1 hour
 
 #########
 # 
@@ -27,6 +28,7 @@ module Lita
 		#########
       	# Events
       	on :loaded, :handler_loaded
+      	on :task_status, :handle_task_status_update
 
 		#########
       	# Routes
@@ -78,10 +80,22 @@ module Lita
             help: { 'desc [task id]' => 'Describe a task' }
         )
 
+		http.post "/task/:id/:status", :receive_task_status
+
 		##########################
       	# Event Handlers
-		def handler_loaded(_payload)
+		def handler_loaded(payload)
 			log.debug('XlDeploy handler loaded')
+		end
+
+		def handle_task_status_update(payload)
+			log.debug('Received task status update')
+			taskId = payload[:task_id]
+			botId = get_or_create_bot_id(taskId, false)
+			if botId != nil
+				rooms = get_room_list_for_task_id(botId)
+				rooms.each { |room| robot.send_message(room, "[#{botId}] #{payload[:task_status]}") }
+			end
 		end
 
 		#########
@@ -92,10 +106,10 @@ module Lita
 
 		#########
       	# Helpers
-		def get_or_create_bot_id(taskId)
+		def get_or_create_bot_id(taskId, create = true)
 			taskToBotKey = "taskId:" + taskId
 			botId = redis.get(taskToBotKey)
-			if botId == nil
+			if botId == nil && create
 				clash = true
 				while clash
 					botId = [*('a'..'z'),*('0'..'9')].shuffle[0,5].join
@@ -103,9 +117,9 @@ module Lita
 					taskToBotKey = "taskId:" + taskId
 					clash = redis.get(botToTaskKey) != nil
 					if (!clash)
-						redis.set(botToTaskKey, taskId)
-						redis.set(taskToBotKey, botId)
-						log.debug(taskId + " -> " + botId)
+						redis.set(botToTaskKey, taskId, { ex: REDIS_TIMEOUT_SECS })
+						redis.set(taskToBotKey, botId, { ex: REDIS_TIMEOUT_SECS })
+						log.debug(taskId + " -> " + botId + " (expire: #{REDIS_TIMEOUT_SECS})")
 					end
 				end
 			end
@@ -140,7 +154,7 @@ module Lita
 		end
 
 		def set_conversation_context(message, key, value)
-		  	redis.set(message.user.id + ":" + message.room_object.id + ":" + key, value)
+		  	redis.set(message.user.id + ":" + message.room_object.id + ":" + key, value, { ex: REDIS_TIMEOUT_SECS })
 		end
 
 		def get_conversation_context(message, key)
@@ -153,6 +167,14 @@ module Lita
 
 		def print_task(botId, task)
 			"- [" + task["@state"] + "] " + task["metadata"]["application"]["$"] + "/" + task["metadata"]["version"]["$"] + " to " + task["metadata"]["environment"]["$"] + " [" + botId + "] "
+		end
+
+		def update_room_task_id(room, taskId)
+		  	redis.sadd(taskId + ":rooms", room.id)
+		end
+
+		def get_room_list_for_task_id(taskId)
+		  	redis.smembers(taskId + ":rooms")
 		end
 
 		def determine_initial_or_update(http, appId, envId)
@@ -229,7 +251,7 @@ module Lita
 		end
 
 		#########
-      	# Route handlers
+      	# Chat route handlers
 		def list_deployments(response)
 			tasks = xld_rest_api(http).do_get_tasks()
 
@@ -250,6 +272,7 @@ module Lita
 					for task in depls do
 						botId = get_or_create_bot_id(task["@id"])
 						response.reply(print_task(botId, task))
+						update_room_task_id(response.message.room_object, botId)
 					end
 
 					message = response.message
@@ -302,12 +325,16 @@ module Lita
 			set_conversation_context(message, "currentVersionId", versionId.value)
 			set_conversation_context(message, "currentEnvironmentId", envId.value)
 			
-			response.reply "Starting deployment of " + applicationId.value + "-" + versionId.value + " to " + envId.value
-			
 			mode = determine_initial_or_update(http, applicationId.value, envId.value)
 			preparedDeployment = xld_rest_api(http).prepare_deployment(versionId.value, envId.value, mode)
 			deploymentWithDeployeds = xld_rest_api(http).prepare_deployeds(preparedDeployment)
 			taskId = xld_rest_api(http).create_deployment(deploymentWithDeployeds)
+
+			botId = get_or_create_bot_id(taskId)
+
+			response.reply "Starting deployment of " + applicationId.value + "-" + versionId.value + " to " + envId.value + " [" + botId + "]"
+		  	set_conversation_context(response.message, "currentTaskBotId", botId)
+		  	update_room_task_id(response.message.room_object, botId)
 
 		  	xld_rest_api(http).start_task(taskId)
 		end
@@ -429,6 +456,15 @@ module Lita
 		  	response.reply botId.value + "> Owner: " + task["task"]["@owner"]
 		  	response.reply botId.value + "> Start date: " + task["task"]["startDate"]["$"]
 		  	response.reply botId.value + "> Completion date: " + task["task"]["completionDate"]["$"]
+		end
+
+		#########
+      	# HTTP route handlers
+
+		def receive_task_status(request, response)
+		  taskId = request.env["router.params"][:id]
+		  status = request.env["router.params"][:status]
+		  robot.trigger(:task_status, task_id: taskId, task_status: status)
 		end
 
 		Lita.register_handler(self)
