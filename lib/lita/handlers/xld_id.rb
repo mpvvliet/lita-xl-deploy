@@ -15,6 +15,10 @@ module Lita
       def to_str
       	to_s
       end
+
+      def full_id
+        @id.to_s
+      end
     end
   end
 end

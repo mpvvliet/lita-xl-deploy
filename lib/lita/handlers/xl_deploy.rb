@@ -2,28 +2,22 @@ require_relative './xld_parameter'
 require_relative './xld_id'
 require_relative './xld_rest'
 
-XLD_URL = "http://Highgarden.local:4516/deployit"
-REDIS_TIMEOUT_SECS = 60 * 60 # 1 hour
-
 #########
 # 
 # TO DO:
 #
 # For first working version:
-# - listen to ".xld xxx" commands
-# - implement plugin in XLD to output task events
-# - error handling when tasks are not found, etc. --> try/catch
 # - implement rollback support
 #
 # Technical improvements:
 # - refactor bot id code to separate class
-# - configure XLD server(s)
-# - use proper un/pw for each user
-# - let redis timeout bot ids
 
 module Lita
   module Handlers
     class XlDeploy < Handler
+
+    	config :xld_url
+    	config :context_storage_timeout
 
 		#########
       	# Events
@@ -94,14 +88,14 @@ module Lita
 			botId = get_or_create_bot_id(taskId, false)
 			if botId != nil
 				rooms = get_room_list_for_task_id(botId)
-				rooms.each { |room| robot.send_message(room, "[#{botId}] #{payload[:task_status]}") }
+				rooms.each { |room| robot.send_message(Source.new(room: room), "[#{botId}] #{payload[:task_status]}") }
 			end
 		end
 
 		#########
       	# XLD REST API
       	def xld_rest_api(http)
-			XldRestApi.new(http, XLD_URL, "admin", "admin1")
+			XldRestApi.new(http, config.xld_url, "admin", "admin1")
       	end
 
 		#########
@@ -117,9 +111,9 @@ module Lita
 					taskToBotKey = "taskId:" + taskId
 					clash = redis.get(botToTaskKey) != nil
 					if (!clash)
-						redis.set(botToTaskKey, taskId, { ex: REDIS_TIMEOUT_SECS })
-						redis.set(taskToBotKey, botId, { ex: REDIS_TIMEOUT_SECS })
-						log.debug(taskId + " -> " + botId + " (expire: #{REDIS_TIMEOUT_SECS})")
+						redis.set(botToTaskKey, taskId, { ex: config.context_storage_timeout })
+						redis.set(taskToBotKey, botId, { ex: config.context_storage_timeout })
+						log.debug(taskId + " -> " + botId + " (expire: #{config.context_storage_timeout})")
 					end
 				end
 			end
@@ -138,7 +132,7 @@ module Lita
 
 			if result.value == nil
 				log.debug("unable to find task id")
-				result.error = "Which task do you mean?"
+				raise "Which task do you mean?"
 			end
 
 			result
@@ -148,13 +142,13 @@ module Lita
 			botToTaskKey = "botId:" + botId
 			taskId = redis.get(botToTaskKey)
 			if taskId == nil
-				log.error("ERROR: unable to find task id for bot id " + botId)
+				raise "Sorry, don't know task " + botId
 			end
 			taskId	
 		end
 
 		def set_conversation_context(message, key, value)
-		  	redis.set(message.user.id + ":" + message.room_object.id + ":" + key, value, { ex: REDIS_TIMEOUT_SECS })
+		  	redis.set(message.user.id + ":" + message.room_object.id + ":" + key, value, { ex: config.context_storage_timeout })
 		end
 
 		def get_conversation_context(message, key)
@@ -188,14 +182,28 @@ module Lita
 				result.value = get_conversation_context(message, "currentApplicationId")
 				result.defaulted = true
 				log.debug("defaulted application to context")
+
+				if result.value == nil
+					log.debug("unable to find application")
+					result.error = "Which application do you want to deploy?"
+				end
+
 			else
 				log.debug("searching XLD for application")
-				xld_rest_api(http).find_application(appId, result)
-			end
+				begin
 
-			if result.value == nil
-				log.debug("unable to find application")
-				result.error = "Which application do you want to deploy?"
+					rest_result = xld_rest_api(http).find_application(appId)
+		            cis = rest_result["list"]["ci"]
+          			if cis.is_a? Array
+            			ids = cis.map { |x| x["@ref"]}
+            			result.error = "Which application do you mean? (candidates: " + ids + ")"
+          			else
+            			result.value = XldId.new(cis["@ref"])
+          			end
+
+				rescue RuntimeError => ex
+					result.error = ex.to_s
+				end
 			end
 
 			result
@@ -205,17 +213,25 @@ module Lita
 			result = XldParameter.new("version")
 			if versionId == nil
 				result.defaulted = true
-
 				result.value = get_conversation_context(message, "currentVersionId")
-				# if result.value == nil
-				# 	find_latest_version(http, applicationId, result)
-				# end
-			else
-				xld_rest_api(http).find_version(versionId, result)
-			end
 
-			if result.value == nil
-				result.error = "Which version do you want to deploy?"
+				if result.value == nil
+					result.error = "Which version do you want to deploy?"
+				end
+
+			else
+				begin
+					rest_result = xld_rest_api(http).find_version(versionId)
+		            cis = rest_result["list"]["ci"]
+          			if cis.is_a? Array
+            			ids = cis.map { |x| x["@ref"]}
+            			result.error = "Which version do you mean? (candidates: " + ids + ")"
+          			else
+            			result.value = XldId.new(cis["@ref"])
+          			end
+				rescue RuntimeError => ex
+					result.error = ex.to_s
+				end
 			end
 
 			result
@@ -226,12 +242,24 @@ module Lita
 			if envId == nil
 				result.value = get_conversation_context(message, "currentEnvironmentId")
 				result.defaulted = true
-			else
-				xld_rest_api(http).find_environment(envId, result)
-			end
 
-			if result.value == nil
-				result.error = "Which environment do you want to deploy to?"
+				if result.value == nil
+					result.error = "Which environment do you want to deploy to?"
+				end
+
+			else
+				begin
+					rest_result = xld_rest_api(http).find_environment(envId)
+		            cis = rest_result["list"]["ci"]
+          			if cis.is_a? Array
+            			ids = cis.map { |x| x["@ref"]}
+            			result.error = "Which environment do you mean? (candidates: " + ids + ")"
+          			else
+            			result.value = XldId.new(cis["@ref"])
+          			end
+				rescue RuntimeError => ex
+					result.error = ex.to_s
+				end
 			end
 
 			result
@@ -250,212 +278,196 @@ module Lita
 			loglines.each { |x| response.reply botId + "> " + x }
 		end
 
-		#########
-      	# Chat route handlers
-		def list_deployments(response)
-			tasks = xld_rest_api(http).do_get_tasks()
-
-			response.reply "List of deployments:"
-
-			if tasks["list"]["task"] == nil
-				response.reply("- none")
-			else
-				tasks = tasks["list"]["task"]
-				if tasks.is_a? Hash
-					tasks = [ tasks ]
-				end
-
-				depls = tasks.select { |x| x["metadata"]["taskType"]["$"] == "INITIAL" } # TO DO: Need to cover updates, too
-				if depls.length == 0
-					response.reply("- none")
-				else
-					for task in depls do
-						botId = get_or_create_bot_id(task["@id"])
-						response.reply(print_task(botId, task))
-						update_room_task_id(response.message.room_object, botId)
-					end
-
-					message = response.message
-					clear_conversation_context(message, "currentTaskBotId")
-					clear_conversation_context(message, "currentApplicationId")
-					clear_conversation_context(message, "currentVersionId")
-					clear_conversation_context(message, "currentEnvironmentId")
-
-				end
+		def execute_with_error_reply(response, &block)
+			begin
+				block.call(response)
+			rescue => ex
+				response.reply ex.to_s
 			end
 		end
 
-		def create_default_message(param1, param2 = nil, param3 = nil)
+		#########
+      	# Chat route handlers
+		def list_deployments(response)
+			execute_with_error_reply(response) {
+				tasks = xld_rest_api(http).do_get_tasks()
+
+				response.reply "List of deployments:"
+
+				if tasks["list"]["task"] == nil
+					response.reply("- none")
+				else
+					tasks = tasks["list"]["task"]
+					if tasks.is_a? Hash
+						tasks = [ tasks ]
+					end
+
+					depls = tasks.select { |x| 
+						x["metadata"]["taskType"]["$"] == "INITIAL" || 
+						x["metadata"]["taskType"]["$"] == "UPGRADE" || 
+						x["metadata"]["taskType"]["$"] == "UNDEPLOY" }
+					if depls.length == 0
+						response.reply("- none")
+					else
+						for task in depls do
+							botId = get_or_create_bot_id(task["@id"])
+							response.reply(print_task(botId, task))
+							update_room_task_id(response.message.room_object, botId)
+						end
+
+						message = response.message
+						clear_conversation_context(message, "currentTaskBotId")
+						clear_conversation_context(message, "currentApplicationId")
+						clear_conversation_context(message, "currentVersionId")
+						clear_conversation_context(message, "currentEnvironmentId")
+
+					end
+				end
+			}
+		end
+
+		def output_default_message(response, param1, param2 = nil, param3 = nil)
 			defaultedMessage = ""
 			[ param1, param2, param3].map { |x| 
 				if x != nil && x.defaulted
 					defaultedMessage = defaultedMessage + " " + x.name + " " + x.value
 				end
 			}
-			defaultedMessage
+
+			if defaultedMessage != ""
+				response.reply "(using" + defaultedMessage + ")"
+			end
 		end
 
 		def start_deployment(response)
-			message = response.message
+			execute_with_error_reply(response) {
+				message = response.message
 
-			applicationId = determine_application(message, http, response.match_data[2])
-			if applicationId.error != nil
-				response.reply applicationId.error
-				return
-			end
-	
-			versionId = determine_version(message, http, applicationId, response.match_data[4])
-			if versionId.error != nil
-				response.reply versionId.error
-				return
-			end
+				appParam = determine_application(message, http, response.match_data[2])
+				if appParam.error != nil
+					response.reply appParam.error
+					return
+				end
 
-			envId = determine_environment(message, http, response.match_data[6])
-			if envId.error != nil
-				response.reply envId.error
-				return
-			end
+				versionParam = determine_version(message, http, appParam, response.match_data[4])
+				if versionParam.error != nil
+					response.reply versionParam.error
+					return
+				end
 
-			defaultedMessage = create_default_message(applicationId, versionId, envId)
-			if defaultedMessage != ""
-				response.reply "(using" + defaultedMessage + ")"
-			end
+				envParam = determine_environment(message, http, response.match_data[6])
+				if envParam.error != nil
+					response.reply envParam.error
+					return
+				end
 
-			set_conversation_context(message, "currentApplicationId", applicationId.value)
-			set_conversation_context(message, "currentVersionId", versionId.value)
-			set_conversation_context(message, "currentEnvironmentId", envId.value)
-			
-			mode = determine_initial_or_update(http, applicationId.value, envId.value)
-			preparedDeployment = xld_rest_api(http).prepare_deployment(versionId.value, envId.value, mode)
-			deploymentWithDeployeds = xld_rest_api(http).prepare_deployeds(preparedDeployment)
-			taskId = xld_rest_api(http).create_deployment(deploymentWithDeployeds)
+				output_default_message(response, appParam, versionParam, envParam)
 
-			botId = get_or_create_bot_id(taskId)
+				set_conversation_context(message, "currentApplicationId", appParam.value)
+				set_conversation_context(message, "currentVersionId", versionParam.value)
+				set_conversation_context(message, "currentEnvironmentId", envParam.value)
+				
+				appId = appParam.value
+				envId = envParam.value
+				versionId = versionParam.value
+				# print "*** " + appId.full_id + ", " + versionId.full_id + ", " + envId.full_id + "\n"
 
-			response.reply "Starting deployment of " + applicationId.value + "-" + versionId.value + " to " + envId.value + " [" + botId + "]"
-		  	set_conversation_context(response.message, "currentTaskBotId", botId)
-		  	update_room_task_id(response.message.room_object, botId)
+				mode = determine_initial_or_update(http, appId, envId)
+				preparedDeployment = xld_rest_api(http).prepare_deployment(appId, versionId, envId, mode)
+				deploymentWithDeployeds = xld_rest_api(http).prepare_deployeds(preparedDeployment)
+				taskId = xld_rest_api(http).create_deployment(deploymentWithDeployeds)
 
-		  	xld_rest_api(http).start_task(taskId)
+				botId = get_or_create_bot_id(taskId)
+
+				response.reply "Starting deployment of " + appParam.value + "-" + versionParam.value + " to " + envParam.value + " [" + botId + "]"
+			  	set_conversation_context(response.message, "currentTaskBotId", botId)
+			  	update_room_task_id(response.message.room_object, botId)
+
+			  	xld_rest_api(http).start_task(taskId)
+			}
 		end
 
 		def start_task(response)
-			botId = determine_command_bot_id(response.message, response.match_data[1])
+			execute_with_error_reply(response) {
+				botId = determine_command_bot_id(response.message, response.match_data[1])
 
-			if botId.error != nil
-				response.reply botId.error
-				return
-			end
+				output_default_message(response, botId)
 
-			defaultedMessage = create_default_message(botId)
-			if defaultedMessage != ""
-				response.reply "(using" + defaultedMessage + ")"
-			end
-
-		  	set_conversation_context(response.message, "currentTaskBotId", botId.value)
-		  	taskId = get_task_id(botId.value)
-		  	response.reply "Starting task " + botId.value
-		  	xld_rest_api(http).start_task(taskId)
+			  	set_conversation_context(response.message, "currentTaskBotId", botId.value)
+			  	taskId = get_task_id(botId.value)
+			  	response.reply "Starting task " + botId.value
+			  	xld_rest_api(http).start_task(taskId)
+			}
 		end
 
 		def abort_task(response)
-			botId = determine_command_bot_id(response.message, response.match_data[1])
+			execute_with_error_reply(response) {
+				botId = determine_command_bot_id(response.message, response.match_data[1])
 
-			if botId.error != nil
-				response.reply botId.error
-				return
-			end
+				output_default_message(response, botId)
 
-			defaultedMessage = create_default_message(botId)
-			if defaultedMessage != ""
-				response.reply "(using" + defaultedMessage + ")"
-			end
-
-		  	set_conversation_context(response.message, "currentTaskBotId", botId.value)
-		  	taskId = get_task_id(botId.value)
-		  	response.reply "Aborting task " + botId.value
-		  	xld_rest_api(http).abort_task(taskId)
+			  	set_conversation_context(response.message, "currentTaskBotId", botId.value)
+			  	taskId = get_task_id(botId.value)
+			  	response.reply "Aborting task " + botId.value
+			  	xld_rest_api(http).abort_task(taskId)
+			}
 		end
 
 		def cancel_task(response)
-			botId = determine_command_bot_id(response.message, response.match_data[1])
+			execute_with_error_reply(response) {
+				botId = determine_command_bot_id(response.message, response.match_data[1])
 
-			if botId.error != nil
-				response.reply botId.error
-				return
-			end
+				output_default_message(response, botId)
 
-			defaultedMessage = create_default_message(botId)
-			if defaultedMessage != ""
-				response.reply "(using" + defaultedMessage + ")"
-			end
-
-		  	set_conversation_context(response.message, "currentTaskBotId", botId.value)
-		  	taskId = get_task_id(botId.value)
-		  	response.reply "Cancelling task " + botId.value
-		  	xld_rest_api(http).cancel_task(taskId)
+			  	set_conversation_context(response.message, "currentTaskBotId", botId.value)
+			  	taskId = get_task_id(botId.value)
+			  	response.reply "Cancelling task " + botId.value
+			  	xld_rest_api(http).cancel_task(taskId)
+			}
 		end
 
 		def archive_task(response)
-			botId = determine_command_bot_id(response.message, response.match_data[1])
+			execute_with_error_reply(response) {
+				botId = determine_command_bot_id(response.message, response.match_data[1])
 
-			if botId.error != nil
-				response.reply botId.error
-				return
-			end
+				output_default_message(response, botId)
 
-			defaultedMessage = create_default_message(botId)
-			if defaultedMessage != ""
-				response.reply "(using" + defaultedMessage + ")"
-			end
-
-		  	set_conversation_context(response.message, "currentTaskBotId", botId.value)
-		  	taskId = get_task_id(botId.value)
-		  	response.reply "Archiving task " + botId.value
-		  	xld_rest_api(http).archive_task(taskId)
+			  	set_conversation_context(response.message, "currentTaskBotId", botId.value)
+			  	taskId = get_task_id(botId.value)
+			  	response.reply "Archiving task " + botId.value
+			  	xld_rest_api(http).archive_task(taskId)
+			}
 		end
 
 		def log_task(response)
-			botId = determine_command_bot_id(response.message, response.match_data[1])
+			execute_with_error_reply(response) {
+				botId = determine_command_bot_id(response.message, response.match_data[1])
 
-			if botId.error != nil
-				response.reply botId.error
-				return
-			end
+				output_default_message(response, botId)
 
-			defaultedMessage = create_default_message(botId)
-			if defaultedMessage != ""
-				response.reply "(using" + defaultedMessage + ")"
-			end
-
-		  	set_conversation_context(response.message, "currentTaskBotId", botId.value)
-		  	response.reply "Showing log of task " + botId.value
-		  	show_log_tail(response, http, botId.value)
+			  	set_conversation_context(response.message, "currentTaskBotId", botId.value)
+			  	response.reply "Showing log of task " + botId.value
+			  	show_log_tail(response, http, botId.value)
+			}
 		end
 
 		def describe_task(response)
-			botId = determine_command_bot_id(response.message, response.match_data[1])
+			execute_with_error_reply(response) {
+				botId = determine_command_bot_id(response.message, response.match_data[1])
 
-			if botId.error != nil
-				response.reply botId.error
-				return
-			end
-			
-			defaultedMessage = create_default_message(botId)
-			if defaultedMessage != ""
-				response.reply "(using" + defaultedMessage + ")"
-			end
+				output_default_message(response, botId)
 
-		  	set_conversation_context(response.message, "currentTaskBotId", botId.value)
-		  	response.reply "Describing task " + botId.value
-		  	
-		  	task = xld_rest_api(http).describe_task(get_task_id(botId.value))
+			  	set_conversation_context(response.message, "currentTaskBotId", botId.value)
+			  	response.reply "Describing task " + botId.value
+			  	
+			  	task = xld_rest_api(http).describe_task(get_task_id(botId.value))
 
-		  	response.reply botId.value + "> XLD id: " + task["task"]["@id"]
-		  	response.reply botId.value + "> State: " + task["task"]["@state"] + " (" + task["task"]["@state2"] + ")"
-		  	response.reply botId.value + "> Owner: " + task["task"]["@owner"]
-		  	response.reply botId.value + "> Start date: " + task["task"]["startDate"]["$"]
-		  	response.reply botId.value + "> Completion date: " + task["task"]["completionDate"]["$"]
+			  	response.reply botId.value + "> XLD id: " + task["task"]["@id"]
+			  	response.reply botId.value + "> State: " + task["task"]["@state"] + " (" + task["task"]["@state2"] + ")"
+			  	response.reply botId.value + "> Owner: " + task["task"]["@owner"]
+			  	response.reply botId.value + "> Start date: " + task["task"]["startDate"]["$"]
+			  	response.reply botId.value + "> Completion date: " + task["task"]["completionDate"]["$"]
+			}
 		end
 
 		#########
