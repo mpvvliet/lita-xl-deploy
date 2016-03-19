@@ -19,7 +19,7 @@ module Lita
       def execute_get(url)
         http_response = @http.get(@url + url)
         if is_error(http_response)
-          raise "ERROR: HTTP response code " + http_response.status.to_s + " for GET to URL " + url
+          raise HttpError.new(http_response.status), "Error #{http_response.status} accessing GET URL " + url
         end
         http_response
       end
@@ -32,7 +32,7 @@ module Lita
           end
 
         if is_error(http_response)
-          raise "ERROR: HTTP response code " + http_response.status.to_s + " for POST to URL " + url
+          raise HttpError.new(http_response.status), "Error #{http_response.status} accessing POST URL " + url
         end
         http_response
       end
@@ -110,6 +110,19 @@ module Lita
 
       def start_task(taskId)
         http_response = execute_post("/task/" + taskId + "/start")
+      end
+
+      def rollback_task(taskId)
+        begin
+          http_response = execute_post("/deployment/rollback/" + taskId)
+          http_response.body
+        rescue HttpError => ex
+          if ex.status == 500
+            raise BotError, "This task can not be rolled back, task status must be STOPPED, FAILED, ABORTED or EXECUTED."
+          else
+            raise ex
+          end
+        end
       end
 
       def describe_task(taskId)

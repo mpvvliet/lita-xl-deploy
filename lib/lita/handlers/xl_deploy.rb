@@ -1,22 +1,21 @@
 require_relative './xld_parameter'
 require_relative './xld_id'
 require_relative './xld_rest'
+require_relative './bot_error'
+require_relative './http_error'
 
 #########
 # 
-# TO DO:
+# XL Deploy bot.
 #
-# For first working version:
-# - implement rollback support
-#
-# Technical improvements:
-# - refactor bot id code to separate class
 
 module Lita
   module Handlers
     class XlDeploy < Handler
 
     	config :xld_url
+    	config :xld_username
+    	config :xld_password
     	config :context_storage_timeout
 
 		#########
@@ -36,6 +35,12 @@ module Lita
             :start_deployment,
             command: false,
             help: { 'deploy [application] [version] to [environment]' => 'Start a new deployment' }
+        )
+
+		route(/^rollback\s?([a-z0-9]{5})?$/i,
+            :rollback_task,
+            command: false,
+            help: { 'rollback [task id]' => 'Rollback a task' }
         )
 
 		route(/^start\s?([a-z0-9]{5})?$/i,
@@ -84,6 +89,12 @@ module Lita
 
 		def handle_task_status_update(payload)
 			log.debug('Received task status update')
+			taskStatus = payload[:task_status]
+
+			return if 
+				taskStatus == "CANCELLING" ||
+				taskStatus == "QUEUED"
+
 			taskId = payload[:task_id]
 			botId = get_or_create_bot_id(taskId, false)
 			if botId != nil
@@ -95,7 +106,7 @@ module Lita
 		#########
       	# XLD REST API
       	def xld_rest_api(http)
-			XldRestApi.new(http, config.xld_url, "admin", "admin1")
+			XldRestApi.new(http, config.xld_url, config.xld_username, config.xld_password)
       	end
 
 		#########
@@ -132,7 +143,7 @@ module Lita
 
 			if result.value == nil
 				log.debug("unable to find task id")
-				raise "Which task do you mean?"
+				raise BotError, "Which task do you mean?"
 			end
 
 			result
@@ -142,7 +153,7 @@ module Lita
 			botToTaskKey = "botId:" + botId
 			taskId = redis.get(botToTaskKey)
 			if taskId == nil
-				raise "Sorry, don't know task " + botId
+				raise BotError, "Sorry, don't know task " + botId
 			end
 			taskId	
 		end
@@ -281,9 +292,20 @@ module Lita
 		def execute_with_error_reply(response, &block)
 			begin
 				block.call(response)
-			rescue => ex
+			rescue BotError => ex
 				response.reply ex.to_s
+			rescue => ex
+				log.error("Error: " + ex.to_s)
+				response.reply "Oops -- something went wrong. I'll have to get back to you later..."
+				raise ex
 			end
+		end
+
+		def register_new_task(response, taskId)
+			newBotId = get_or_create_bot_id(taskId)
+			set_conversation_context(response.message, "currentTaskBotId", newBotId)
+			update_room_task_id(response.message.room_object, newBotId)
+			newBotId
 		end
 
 		#########
@@ -305,7 +327,8 @@ module Lita
 					depls = tasks.select { |x| 
 						x["metadata"]["taskType"]["$"] == "INITIAL" || 
 						x["metadata"]["taskType"]["$"] == "UPGRADE" || 
-						x["metadata"]["taskType"]["$"] == "UNDEPLOY" }
+						x["metadata"]["taskType"]["$"] == "UNDEPLOY" || 
+						x["metadata"]["taskType"]["$"] == "ROLLBACK" }
 					if depls.length == 0
 						response.reply("- none")
 					else
@@ -377,11 +400,9 @@ module Lita
 				deploymentWithDeployeds = xld_rest_api(http).prepare_deployeds(preparedDeployment)
 				taskId = xld_rest_api(http).create_deployment(deploymentWithDeployeds)
 
-				botId = get_or_create_bot_id(taskId)
+				botId = register_new_task(response, taskId)
 
 				response.reply "Starting deployment of " + appParam.value + "-" + versionParam.value + " to " + envParam.value + " [" + botId + "]"
-			  	set_conversation_context(response.message, "currentTaskBotId", botId)
-			  	update_room_task_id(response.message.room_object, botId)
 
 			  	xld_rest_api(http).start_task(taskId)
 			}
@@ -439,6 +460,23 @@ module Lita
 			}
 		end
 
+		def rollback_task(response)
+			execute_with_error_reply(response) {
+				botId = determine_command_bot_id(response.message, response.match_data[1])
+
+				output_default_message(response, botId)
+
+			  	taskId = get_task_id(botId.value)
+			  	taskId = xld_rest_api(http).rollback_task(taskId)
+
+			  	newBotId = register_new_task(response, taskId)
+
+			  	response.reply "Rolling back task " + botId.value + " [" + newBotId + "]"
+
+			  	xld_rest_api(http).start_task(taskId)
+			}
+		end
+
 		def log_task(response)
 			execute_with_error_reply(response) {
 				botId = determine_command_bot_id(response.message, response.match_data[1])
@@ -465,8 +503,13 @@ module Lita
 			  	response.reply botId.value + "> XLD id: " + task["task"]["@id"]
 			  	response.reply botId.value + "> State: " + task["task"]["@state"] + " (" + task["task"]["@state2"] + ")"
 			  	response.reply botId.value + "> Owner: " + task["task"]["@owner"]
-			  	response.reply botId.value + "> Start date: " + task["task"]["startDate"]["$"]
-			  	response.reply botId.value + "> Completion date: " + task["task"]["completionDate"]["$"]
+
+			  	begin
+				  	response.reply botId.value + "> Start date: " + task["task"]["startDate"]["$"]
+				  	response.reply botId.value + "> Completion date: " + task["task"]["completionDate"]["$"]
+				rescue
+					#ignore
+				end
 			}
 		end
 
