@@ -51,8 +51,8 @@ module Lita
         MultiJson.load(CobraVsMongoose.xml_to_json(http_response.body))
       end
 
-      def find_version(name)
-        http_response = execute_get("/repository/query?type=udm.DeploymentPackage&namePattern=#{URI::encode('%' + name + '%')}")
+      def find_version(applicationId, name)
+        http_response = execute_get("/repository/query?type=udm.DeploymentPackage&parent=#{URI::encode(applicationId)}&namePattern=#{URI::encode('%' + name + '%')}")
         MultiJson.load(CobraVsMongoose.xml_to_json(http_response.body))
       end
 

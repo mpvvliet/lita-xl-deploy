@@ -204,13 +204,18 @@ module Lita
 				begin
 
 					rest_result = xld_rest_api(http).find_application(appId)
-		            cis = rest_result["list"]["ci"]
-          			if cis.is_a? Array
-            			ids = cis.map { |x| x["@ref"]}
-            			result.error = "Which application do you mean? (candidates: " + ids + ")"
-          			else
-            			result.value = XldId.new(cis["@ref"])
-          			end
+		            ci_list = rest_result["list"]
+		            if ci_list["ci"] == nil
+	        			result.error = "Unable to find application " + appId
+	        		else
+			            cis = ci_list["ci"]
+	          			if cis.is_a? Array
+	            			ids = cis.map { |x| x["@ref"]}.join(", ")
+	            			result.error = "Which application do you mean? (candidates: " + ids + ")"
+	          			else
+	            			result.value = XldId.new(cis["@ref"])
+	          			end
+	          		end
 
 				rescue RuntimeError => ex
 					result.error = ex.to_s
@@ -227,19 +232,24 @@ module Lita
 				result.value = get_conversation_context(message, "currentVersionId")
 
 				if result.value == nil
-					result.error = "Which version do you want to deploy?"
+					result.error = "Which version of " + applicationId + " do you want to deploy?"
 				end
 
 			else
 				begin
-					rest_result = xld_rest_api(http).find_version(versionId)
-		            cis = rest_result["list"]["ci"]
-          			if cis.is_a? Array
-            			ids = cis.map { |x| x["@ref"]}
-            			result.error = "Which version do you mean? (candidates: " + ids + ")"
-          			else
-            			result.value = XldId.new(cis["@ref"])
-          			end
+					rest_result = xld_rest_api(http).find_version(applicationId.full_id, versionId)
+		            ci_list = rest_result["list"]
+		            if ci_list["ci"] == nil
+	        			result.error = "Unable to find version " + versionId
+	        		else
+			            cis = ci_list["ci"]
+	          			if cis.is_a? Array
+	            			ids = cis.map { |x| x["@ref"]}.join(", ")
+	            			result.error = "Which version do you mean? (candidates: " + ids + ")"
+	          			else
+	            			result.value = XldId.new(cis["@ref"])
+	          			end
+	          		end
 				rescue RuntimeError => ex
 					result.error = ex.to_s
 				end
@@ -261,13 +271,18 @@ module Lita
 			else
 				begin
 					rest_result = xld_rest_api(http).find_environment(envId)
-		            cis = rest_result["list"]["ci"]
-          			if cis.is_a? Array
-            			ids = cis.map { |x| x["@ref"]}
-            			result.error = "Which environment do you mean? (candidates: " + ids + ")"
-          			else
-            			result.value = XldId.new(cis["@ref"])
-          			end
+		            ci_list = rest_result["list"]
+		            if ci_list["ci"] == nil
+	        			result.error = "Unable to find environment " + envId
+	        		else
+			            cis = ci_list["ci"]
+	          			if cis.is_a? Array
+	            			ids = cis.map { |x| x["@ref"]}.join(", ")
+	            			result.error = "Which environment do you mean? (candidates: " + ids + ")"
+	          			else
+	            			result.value = XldId.new(cis["@ref"])
+	          			end
+	          		end
 				rescue RuntimeError => ex
 					result.error = ex.to_s
 				end
@@ -372,7 +387,7 @@ module Lita
 					return
 				end
 
-				versionParam = determine_version(message, http, appParam, response.match_data[4])
+				versionParam = determine_version(message, http, appParam.value, response.match_data[4])
 				if versionParam.error != nil
 					response.reply versionParam.error
 					return
