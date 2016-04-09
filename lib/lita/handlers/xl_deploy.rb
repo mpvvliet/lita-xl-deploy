@@ -31,6 +31,24 @@ module Lita
             help: { 'deployments' => 'List all current deployments' }
         )
 
+		route(/^environments$/i,
+            :list_environments,
+            command: false,
+            help: { 'environments' => 'List all environments' }
+        )
+
+		route(/^applications$/i,
+            :list_applications,
+            command: false,
+            help: { 'applications' => 'List all applications' }
+        )
+
+		route(/^versions(\s([a-z][^\s]+))?$/i,
+            :list_versions,
+            command: false,
+            help: { 'versions' => 'List all application versions' }
+        )
+
 		route(/^deploy(\s([a-z][^\s]+))?(\s([0-9][^\s]+))?(\sto\s([a-z]+))?$/i,
             :start_deployment,
             command: false,
@@ -196,11 +214,11 @@ module Lita
 
 				if result.value == nil
 					log.debug("unable to find application")
-					result.error = "Which application do you want to deploy?"
+					result.error = "Which application are you looking for?"
 				end
 
 			else
-				log.debug("searching XLD for application")
+				log.debug("searching XLD for application " + appId)
 				begin
 
 					rest_result = xld_rest_api(http).find_application(appId)
@@ -232,7 +250,7 @@ module Lita
 				result.value = get_conversation_context(message, "currentVersionId")
 
 				if result.value == nil
-					result.error = "Which version of " + applicationId + " do you want to deploy?"
+					result.error = "Which version of " + applicationId + " are you looking for?"
 				end
 
 			else
@@ -265,7 +283,7 @@ module Lita
 				result.defaulted = true
 
 				if result.value == nil
-					result.error = "Which environment do you want to deploy to?"
+					result.error = "Which environment are you looking for?"
 				end
 
 			else
@@ -361,6 +379,93 @@ module Lita
 
 					end
 				end
+			}
+		end
+
+		def list_environments(response)
+			execute_with_error_reply(response) {
+				rest_result = xld_rest_api(http).find_environment("")
+
+				response.reply "List of environments:"
+
+	            ci_list = rest_result["list"]
+	            if ci_list["ci"] == nil
+        			result.error = "- none"
+        		else
+		            cis = ci_list["ci"]
+					if cis.is_a? Hash
+						cis = [ cis ]
+					end
+
+					for env in cis do
+						response.reply("- " + env["@ref"])
+					end
+
+					message = response.message
+					clear_conversation_context(message, "currentEnvironmentId")
+
+          		end
+			}
+		end
+
+		def list_applications(response)
+			execute_with_error_reply(response) {
+				rest_result = xld_rest_api(http).find_application("")
+
+				response.reply "List of applications:"
+
+	            ci_list = rest_result["list"]
+	            if ci_list["ci"] == nil
+        			result.error = "- none"
+        		else
+		            cis = ci_list["ci"]
+					if cis.is_a? Hash
+						cis = [ cis ]
+					end
+
+					for env in cis do
+						response.reply("- " + env["@ref"])
+					end
+
+					message = response.message
+					clear_conversation_context(message, "currentApplicationId")
+
+          		end
+			}
+		end
+
+		def list_versions(response)
+			execute_with_error_reply(response) {
+				message = response.message
+
+				appParam = determine_application(message, http, response.match_data[2])
+				if appParam.error != nil
+					response.reply appParam.error
+					return
+				end
+
+				log.debug("Listing versions of application " + appParam.value)
+				rest_result = xld_rest_api(http).find_version(appParam.value.full_id, "")
+
+				response.reply "List of " + appParam.value + " versions:"
+
+	            ci_list = rest_result["list"]
+	            if ci_list["ci"] == nil
+        			result.error = "- none"
+        		else
+		            cis = ci_list["ci"]
+					if cis.is_a? Hash
+						cis = [ cis ]
+					end
+
+					for env in cis do
+						response.reply("- " + env["@ref"])
+					end
+
+					message = response.message
+					clear_conversation_context(message, "currentVersionId")
+
+          		end
 			}
 		end
 
