@@ -80,7 +80,8 @@ Lita.configure do |config|
   config.handlers.xl_deploy.xld_password = "secret"
   config.handlers.xl_deploy.context_storage_timeout = "3600"
 
-end```
+end
+```
 
 ## Usage
 
