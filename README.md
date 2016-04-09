@@ -8,10 +8,18 @@ This bot makes XL Deploy an active part of your DevOps communication. Include XL
 
 ## Installation
 
-Add lita-xl-deploy to your Lita instance's Gemfile:
+See the [Lita installation documentation](https://docs.lita.io/getting-started/installation/) for instructions on how to setup a Lita bot.
+
+Add lita-xl-deploy handler to your bot by adding it to your Lita instance's Gemfile:
 
 ``` ruby
 gem "lita-xl-deploy"
+```
+
+Or, if you run it directly from source:
+
+``` ruby
+gem "lita-xl-deploy", :path => "/path/to/lita-xl-deploy"
 ```
 
 ## Configuration
@@ -31,12 +39,48 @@ None.
 
 ``` ruby
 Lita.configure do |config|
+  # The name your robot will use.
+  config.robot.name = "My Bot"
+
+  # The locale code for the language to use.
+  # config.robot.locale = :en
+
+  # The severity of messages to log. Options are:
+  # :debug, :info, :warn, :error, :fatal
+  # Messages at the selected level and above will be logged.
+  config.robot.log_level = :info
+
+  # An array of user IDs that are considered administrators. These users
+  # the ability to add and remove other users from authorization groups.
+  # What is considered a user ID will change depending on which adapter you use.
+  # config.robot.admins = ["1", "2"]
+
+  # The adapter you want to connect with. Make sure you've added the
+  # appropriate gem to the Gemfile.
+  config.robot.adapter = :hipchat
+  config.adapters.hipchat.jid = "123456_123456@chat.hipchat.com"
+  config.adapters.hipchat.password = "secret"
+  config.adapters.hipchat.debug = false
+  config.adapters.hipchat.rooms = [ "123456_sandbox" ]
+
+  ## Example: Set options for the chosen adapter.
+  # config.adapter.username = "myname"
+  # config.adapter.password = "secret"
+
+  ## Example: Set options for the Redis connection.
+  # config.redis.host = "127.0.0.1"
+  # config.redis.port = 1234
+
+  ## Example: Set configuration for any loaded handlers. See the handler's
+  ## documentation for options.
+  # config.handlers.some_handler.some_config_key = "value"
+
   config.handlers.xl_deploy.xld_url = "http://localhost:4516/deployit"
-  config.handlers.xl_deploy.xld_username = "username"
+  config.handlers.xl_deploy.xld_username = "admin"
   config.handlers.xl_deploy.xld_password = "secret"
   config.handlers.xl_deploy.context_storage_timeout = "3600"
-end
-```
+
+end```
 
 ## Usage
 
